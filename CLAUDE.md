@@ -79,6 +79,15 @@ podman build -t forge-dev:latest containers/
 | `forge:blocked` | Workflow blocked, needs intervention |
 | `forge:retry` | Trigger retry of failed step |
 
+## GitHub PR Comment Commands
+
+| Command | Where | Effect |
+|---------|-------|--------|
+| `/forge skip-gate <name>` | PR comment | Skip a named CI check (substring match); persists across pushes |
+| `/forge unskip-gate <name>` | PR comment | Remove a previously set skip |
+
+Commands are only active when the workflow is at a CI stage (`wait_for_ci_gate`, `ci_evaluator`, `attempt_ci_fix`).
+
 ## Container Execution
 
 Tasks are implemented in ephemeral Podman containers:

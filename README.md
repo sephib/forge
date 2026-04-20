@@ -140,6 +140,34 @@ When a workflow fails:
 
 > **CI-specific:** If CI fix attempts are exhausted, adding `forge:retry` resets the attempt counter so Forge gets a fresh budget of retries.
 
+### Skipping CI Gates
+
+When a CI check fails due to infrastructure issues unrelated to your code (e.g. a cloud environment outage, quota exhaustion, or a flaky test runner), you can bypass it with a PR comment:
+
+```
+/forge skip-gate <check-name-substring>
+```
+
+**Examples:**
+```
+/forge skip-gate e2e-openstack-ovn
+/forge skip-gate e2e-openstack        ← skips all checks containing this substring
+```
+
+Forge will:
+1. Reply on the PR confirming the skip
+2. Post an audit comment on the Jira ticket
+3. Re-evaluate CI treating the skipped check as passing
+
+To remove a skip:
+```
+/forge unskip-gate e2e-openstack-ovn
+```
+
+Skips persist across pushes — if the infra check fails again on the next commit, it is still skipped. The check name is matched as a case-insensitive substring of the full check name.
+
+> **Note:** Certain checks (e.g. `tide`, Prow's merge-queue) are always pending and are permanently ignored. Configure with `CI_IGNORED_CHECKS` in `.env`.
+
 ### Bug Workflow
 
 Bugs follow a simpler workflow:
@@ -161,7 +189,7 @@ Create Bug → Analyze (RCA) → [Approval + Q&A] → Implement Fix → PR → C
 | **Implementation** | Code executed in ephemeral Podman containers | (Automatic) |
 | **Local Code Review** | Reviews the diff against main, fixes breaking issues in-place (up to 2 passes) before PR creation | (Automatic) |
 | **PR Creation** | Fork-based pull request created with AI-generated description; PR body synced against commits | (Automatic) |
-| **CI Validation** | Pauses until GitHub CI webhook; on failure: runs two-stage analyze-then-fix pipeline (up to 5 retries). Each fix pass is reviewed in-place before push; PR description synced after each push. | (Automatic) |
+| **CI Validation** | Pauses until GitHub CI webhook; on failure: runs two-stage analyze-then-fix pipeline (up to 5 retries). Each fix pass is reviewed in-place before push; PR description synced after each push. Specific checks can be skipped via PR comment. | (Automatic + `/forge skip-gate`) |
 | **AI Review** | Reviews the PR against the spec after CI passes | (Automatic) |
 | **Human Review** | PR ready for human review | Merge or request changes |
 
