@@ -56,7 +56,7 @@ Before returning the specification:
 
 ## Output Format
 
-Follow the structure in `plugins/forge-sdlc/templates/spec-template.md`.
+Follow the structure in `skills/default/generate-spec/spec-template.md`.
 Omit any section that does not apply to this feature type.
 
 IMPORTANT: Return ONLY the specification content. Do not include any planning text, explanations of what you're doing, or meta-commentary. Start directly with the specification title.

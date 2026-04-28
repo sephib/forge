@@ -9,7 +9,7 @@ Decompose a specification into 2-5 implementable Epics using the template and gu
 
 ## Instructions
 
-1. Read the template from `plugins/forge-sdlc/templates/epic-template.md`
+1. Read the template from `skills/default/decompose-epics/epic-template.md`
 2. Analyze the specification content
 3. Identify 2-5 cohesive capability areas
 4. Create detailed implementation plan for each
@@ -61,7 +61,7 @@ For each Epic, use this format:
 ---
 EPIC: [Epic Title]
 PLAN:
-[Full epic content following plugins/forge-sdlc/templates/epic-template.md]
+[Full epic content following skills/default/decompose-epics/epic-template.md]
 ---
 ```
 

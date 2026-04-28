@@ -9,7 +9,7 @@ Generate a Product Requirements Document using the template and guidelines below
 
 ## Instructions
 
-1. Read the template from `plugins/forge-sdlc/templates/prd-template.md`
+1. Read the template from `skills/default/generate-prd/prd-template.md`
 2. **Fetch attachments**: Check whether the feature ticket has any attachments (e.g. mockups, research docs, specs, diagrams). Use `mcp__atlassian__jira_download_attachments` or equivalent Jira tools to retrieve them. For each attachment, attempt to read or fetch its content and incorporate it as additional context. If an attachment cannot be read (e.g. unsupported binary format), note its filename and skip it.
 3. Analyze the raw requirements provided, combined with any content extracted from attachments
 4. Fill in all sections of the template
@@ -65,6 +65,6 @@ Before returning the PRD, verify:
 
 ## Output Format
 
-Follow the structure in `plugins/forge-sdlc/templates/prd-template.md` exactly.
+Follow the structure in `skills/default/generate-prd/prd-template.md` exactly.
 
 IMPORTANT: Return ONLY the PRD content. Do not include any planning text, explanations of what you're doing, or meta-commentary. Start directly with the PRD title.
