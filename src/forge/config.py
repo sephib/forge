@@ -201,7 +201,7 @@ class Settings(BaseSettings):
         description="Working directory for agent file operations (empty = current dir)",
     )
     agent_skill_paths: str = Field(
-        default="plugins/forge-sdlc/skills/",
+        default="skills/default/",
         description="Comma-separated list of skill directories for orchestrator agent",
     )
     container_skill_paths: str = Field(
