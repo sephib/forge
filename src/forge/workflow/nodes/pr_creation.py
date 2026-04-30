@@ -206,6 +206,9 @@ async def create_pull_request(state: WorkflowState) -> WorkflowState:
             f"Implements {len(implemented_tasks)} tasks.",
         )
 
+        # Add remote link so the poller can discover the PR
+        await jira.create_remote_link(ticket_key, pr_url, f"PR #{pr_number}")
+
         logger.info(f"Created PR #{pr_number}: {pr_url}")
 
         # Sync description to catch any inaccuracies from local_review commits

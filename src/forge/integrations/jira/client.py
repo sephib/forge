@@ -450,6 +450,22 @@ class JiraClient:
             logger.info(f"Deleted {deleted} attachment(s) named '{filename}' from {issue_key}")
         return deleted
 
+    async def create_remote_link(self, issue_key: str, url: str, title: str) -> None:
+        """Add a remote link (web link) to a Jira issue.
+
+        Args:
+            issue_key: The Jira issue key.
+            url: The URL to link to.
+            title: Display title for the link.
+        """
+        client = await self._get_client()
+        response = await client.post(
+            f"/issue/{issue_key}/remotelink",
+            json={"object": {"url": url, "title": title}},
+        )
+        response.raise_for_status()
+        logger.info(f"Added remote link to {issue_key}: {url}")
+
     async def add_comment(self, issue_key: str, body: str) -> JiraComment:
         """Add a comment to a Jira issue.
 
