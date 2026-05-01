@@ -348,6 +348,67 @@ class GitHubClient:
         response.raise_for_status()
         return response.text
 
+    async def get_job_logs(self, owner: str, repo: str, job_id: int | str) -> str:
+        """Download logs for a specific Actions job as plain text.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            job_id: GitHub Actions job ID.
+
+        Returns:
+            Log content as string, or empty string on failure.
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        return response.text
+
+    async def get_run_artifacts(
+        self, owner: str, repo: str, run_id: int | str
+    ) -> list[dict[str, Any]]:
+        """List artifacts produced by a workflow run.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            run_id: Workflow run ID.
+
+        Returns:
+            List of artifact metadata dicts.
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts",
+            params={"per_page": 100},
+        )
+        response.raise_for_status()
+        return response.json().get("artifacts", [])
+
+    async def download_artifact_zip(
+        self, owner: str, repo: str, artifact_id: int | str
+    ) -> bytes:
+        """Download an artifact as a zip archive.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            artifact_id: Artifact ID.
+
+        Returns:
+            Raw zip bytes.
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip",
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        return response.content
+
     async def get_repository(self, owner: str, repo: str) -> dict[str, Any]:
         """Get repository details.
 
