@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from forge.skills.cli_handlers import (
+    _install_local_path,
     _is_git_url,
     cmd_skills_install,
     cmd_skills_list,
@@ -78,20 +79,20 @@ class TestCmdSkillsInstallValidation:
         assert "mutually exclusive" in err
 
     @pytest.mark.asyncio
-    async def test_non_git_url_with_project_returns_1(self, capsys):
-        args = _install_args(source="/local/path", project="MYPROJ")
+    async def test_non_existent_local_path_with_project_returns_1(self, capsys):
+        args = _install_args(source="/nonexistent/local/path", project="MYPROJ")
         result = await cmd_skills_install(args)
         assert result == 1
         err = capsys.readouterr().err
-        assert "does not look like a Git URL" in err
+        assert "does not exist" in err
 
     @pytest.mark.asyncio
-    async def test_non_git_url_with_default_returns_1(self, capsys):
-        args = _install_args(source="./relative", default=True)
+    async def test_non_existent_local_path_with_default_returns_1(self, capsys):
+        args = _install_args(source="./nonexistent-relative", default=True)
         result = await cmd_skills_install(args)
         assert result == 1
         err = capsys.readouterr().err
-        assert "does not look like a Git URL" in err
+        assert "does not exist" in err
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +363,194 @@ class TestCmdSkillsInstallLockFile:
         assert entry.target == "PROJ"
         assert entry.skills == ["tool"]
         assert entry.fetched_at is not None
+
+
+# ---------------------------------------------------------------------------
+# Local path installation
+# ---------------------------------------------------------------------------
+
+
+class TestInstallLocalPath:
+    """Tests for _install_local_path and its integration via cmd_skills_install."""
+
+    def _make_local_skills_dir(self, tmp_path: Path) -> Path:
+        """Create a local skills directory with two skill subdirectories."""
+        local_dir = tmp_path / "local-skills"
+        (local_dir / "skill-alpha").mkdir(parents=True)
+        (local_dir / "skill-alpha" / "SKILL.md").write_text("# Alpha")
+        (local_dir / "skill-beta").mkdir(parents=True)
+        (local_dir / "skill-beta" / "SKILL.md").write_text("# Beta")
+        return local_dir
+
+    def test_nonexistent_path_returns_1(self, capsys):
+        result = _install_local_path("/nonexistent/path", "default")
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "does not exist" in err
+
+    def test_file_path_returns_1(self, tmp_path: Path, capsys):
+        a_file = tmp_path / "somefile.txt"
+        a_file.write_text("hello")
+        result = _install_local_path(str(a_file), "default")
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "not a directory" in err
+
+    def test_copies_to_project_dir(self, tmp_path: Path, capsys):
+        local_dir = self._make_local_skills_dir(tmp_path)
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file") as mock_lock,
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            result = _install_local_path(str(local_dir), "myproj")
+
+        assert result == 0
+        target = tmp_path / "skills" / "myproj"
+        assert (target / "skill-alpha").is_dir()
+        assert (target / "skill-beta").is_dir()
+
+        mock_lock.assert_called_once()
+        _lp, entry = mock_lock.call_args.args
+        assert entry.target == "myproj"
+        assert "skill-alpha" in entry.skills
+        assert "skill-beta" in entry.skills
+
+        out = capsys.readouterr().out
+        assert "2 skills" in out
+        assert "skills/myproj/" in out
+
+    def test_copies_to_default_dir(self, tmp_path: Path, capsys):
+        local_dir = self._make_local_skills_dir(tmp_path)
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file"),
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            result = _install_local_path(str(local_dir), "default")
+
+        assert result == 0
+        target = tmp_path / "skills" / "default"
+        assert (target / "skill-alpha").is_dir()
+        assert (target / "skill-beta").is_dir()
+
+        out = capsys.readouterr().out
+        assert "skills/default/" in out
+
+    def test_overwrites_existing_target(self, tmp_path: Path):
+        local_dir = self._make_local_skills_dir(tmp_path)
+
+        # Pre-populate the target with a stale skill.
+        target = tmp_path / "skills" / "myproj"
+        stale = target / "stale-skill"
+        stale.mkdir(parents=True)
+        (stale / "SKILL.md").write_text("# Stale")
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file"),
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            result = _install_local_path(str(local_dir), "myproj")
+
+        assert result == 0
+        # Stale skill must no longer exist.
+        assert not (target / "stale-skill").exists()
+        # New skills must be present.
+        assert (target / "skill-alpha").is_dir()
+
+    def test_lock_entry_source_is_resolved_path(self, tmp_path: Path):
+        local_dir = self._make_local_skills_dir(tmp_path)
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file") as mock_lock,
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            result = _install_local_path(str(local_dir), "myproj")
+
+        assert result == 0
+        _lp, entry = mock_lock.call_args.args
+        # Source should be stored as the resolved (absolute) path string.
+        assert entry.source == str(local_dir.resolve())
+        # No commit SHA for local paths.
+        assert entry.resolved_commit == ""
+        assert entry.ref == ""
+        assert entry.mode == "path"
+        assert entry.fetched_at is not None
+
+    def test_single_skill_uses_singular_word(self, tmp_path: Path, capsys):
+        local_dir = tmp_path / "local-skills"
+        (local_dir / "only-skill").mkdir(parents=True)
+        (local_dir / "only-skill" / "SKILL.md").write_text("# Only")
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file"),
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            result = _install_local_path(str(local_dir), "myproj")
+
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "1 skill " in out  # singular
+
+
+class TestCmdSkillsInstallLocalPath:
+    """Integration tests for cmd_skills_install routing local paths."""
+
+    @pytest.mark.asyncio
+    async def test_local_absolute_path_with_project(self, tmp_path: Path, capsys):
+        local_dir = tmp_path / "my-skills"
+        (local_dir / "skill-x").mkdir(parents=True)
+        (local_dir / "skill-x" / "SKILL.md").write_text("# X")
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file"),
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            args = argparse.Namespace(
+                source=str(local_dir), project="MYPROJ", default=False, ref=None
+            )
+            result = await cmd_skills_install(args)
+
+        assert result == 0
+        assert (tmp_path / "skills" / "MYPROJ" / "skill-x").is_dir()
+        out = capsys.readouterr().out
+        assert "skills/MYPROJ/" in out
+
+    @pytest.mark.asyncio
+    async def test_local_path_with_default_flag(self, tmp_path: Path):
+        local_dir = tmp_path / "my-skills"
+        (local_dir / "skill-y").mkdir(parents=True)
+        (local_dir / "skill-y" / "SKILL.md").write_text("# Y")
+
+        with (
+            patch("forge.skills.cli_handlers.update_lock_file"),
+            patch("forge.skills.cli_handlers.Path.cwd", return_value=tmp_path),
+        ):
+            args = argparse.Namespace(source=str(local_dir), project=None, default=True, ref=None)
+            result = await cmd_skills_install(args)
+
+        assert result == 0
+        assert (tmp_path / "skills" / "default" / "skill-y").is_dir()
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_local_path_returns_1(self, capsys):
+        args = argparse.Namespace(
+            source="/definitely/does/not/exist", project="PROJ", default=False, ref=None
+        )
+        result = await cmd_skills_install(args)
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "does not exist" in err
+
+    @pytest.mark.asyncio
+    async def test_local_path_is_file_returns_1(self, tmp_path: Path, capsys):
+        a_file = tmp_path / "skills.zip"
+        a_file.write_text("fake zip")
+        args = argparse.Namespace(source=str(a_file), project="PROJ", default=False, ref=None)
+        result = await cmd_skills_install(args)
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "not a directory" in err
 
 
 # ---------------------------------------------------------------------------

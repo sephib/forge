@@ -83,15 +83,10 @@ async def cmd_skills_install(args: argparse.Namespace) -> int:
     # ------------------------------------------------------------------
     # 3. Detect source type and route accordingly.
     # ------------------------------------------------------------------
-    if not _is_git_url(source):
-        print(
-            f"Error: source {source!r} does not look like a Git URL "
-            "(must contain '://' or start with 'git@')",
-            file=sys.stderr,
-        )
-        return 1
-
-    return await _install_git_url(source, ref, target_name)
+    if _is_git_url(source):
+        return await _install_git_url(source, ref, target_name)
+    else:
+        return _install_local_path(source, target_name)
 
 
 async def _install_git_url(
@@ -176,6 +171,89 @@ async def _install_git_url(
 
     # ------------------------------------------------------------------
     # 11. Report success.
+    # ------------------------------------------------------------------
+    skill_word = "skill" if len(installed_skills) == 1 else "skills"
+    print(
+        f"Successfully installed {len(installed_skills)} {skill_word} "
+        f"from {source!r} into skills/{target_name}/",
+        flush=True,
+    )
+    if installed_skills:
+        for name in installed_skills:
+            print(f"  - {name}", flush=True)
+
+    return 0
+
+
+def _install_local_path(source: str, target_name: str) -> int:
+    """Copy a local directory into ``skills/<target_name>/``.
+
+    The entire *source* directory is copied to the target using
+    :func:`shutil.copytree`, replacing any existing content.
+
+    Args:
+        source: Local path (absolute or relative) to the skills directory.
+        target_name: Subdirectory name inside ``skills/`` where skills will
+            be installed (e.g. ``"myproj"`` or ``"default"``).
+
+    Returns:
+        ``0`` on success, ``1`` on validation failure.
+    """
+    source_path = Path(source).resolve()
+
+    # ------------------------------------------------------------------
+    # Validate that the source path exists and is a directory.
+    # ------------------------------------------------------------------
+    if not source_path.exists():
+        print(
+            f"Error: local path {source!r} does not exist",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not source_path.is_dir():
+        print(
+            f"Error: local path {source!r} is not a directory",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ------------------------------------------------------------------
+    # Determine the target installation directory.
+    # ------------------------------------------------------------------
+    skills_root = Path.cwd() / "skills"
+    target_dir = skills_root / target_name
+
+    # ------------------------------------------------------------------
+    # Copy the source directory to the target, overwriting existing content.
+    # ------------------------------------------------------------------
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
+    shutil.copytree(source_path, target_dir, symlinks=True)
+
+    # Count installed skills (immediate subdirectories).
+    installed_skills = [entry.name for entry in sorted(target_dir.iterdir()) if entry.is_dir()]
+
+    # ------------------------------------------------------------------
+    # Update the lock file.
+    # ------------------------------------------------------------------
+    lock_path = skills_root / "skills.lock"
+    lock_entry = LockEntry(
+        source=str(source_path),
+        ref="",
+        resolved_commit="",
+        mode="path",
+        path=None,
+        skill_mapping=None,
+        target=target_name,
+        skills=installed_skills,
+        fetched_at=datetime.now(tz=UTC),
+    )
+    update_lock_file(lock_path, lock_entry)
+
+    # ------------------------------------------------------------------
+    # Report success.
     # ------------------------------------------------------------------
     skill_word = "skill" if len(installed_skills) == 1 else "skills"
     print(
