@@ -32,3 +32,4 @@ This directory contains proposals for new Forge features and enhancements.
 | 008 | [Stable PR-to-Ticket Association via State Lookup](008-stable-pr-to-ticket-association.md) | Draft | eshulman2 |
 | 009 | [Skill Packages via Jira Project Metadata](009-skill-installer.md) | Draft | eshulman2 |
 | 010 | [Repository Configuration via Jira Project Metadata](010-project-metadata-repos.md) | Implemented | eshulman2 |
+| 011 | [Revision Summary on Artifact Approval](011-revision-summary-on-approval.md) | Draft | eshulman2 |
