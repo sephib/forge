@@ -1,14 +1,17 @@
 """Jira REST API client for CRUD operations on tickets."""
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from forge.config import Settings, get_settings
 from forge.integrations.jira.models import JiraComment, JiraIssue
 from forge.models.workflow import ForgeLabel
+from forge.skills.models import SkillEntry
 
 logger = logging.getLogger(__name__)
 
@@ -860,6 +863,63 @@ class JiraClient:
             )
         logger.info(f"Project {project_key}: default repo: {value}")
         return value
+
+    async def get_skills_config(self, project_key: str) -> list[SkillEntry] | None:
+        """Fetch and parse the forge.skills project property.
+
+        Performs a fresh API call on every invocation — results are intentionally
+        NOT cached so that each ticket receives an up-to-date skill configuration
+        as required by SC-001.
+
+        Args:
+            project_key: The Jira project key (e.g., "MYPROJ").
+
+        Returns:
+            A list of :class:`~forge.skills.models.SkillEntry` objects when the
+            property is set and valid, an empty list when the property value is
+            present but cannot be parsed, or ``None`` when the property is not set
+            (i.e. the API returns 404).
+        """
+        client = await self._get_client()
+        response = await client.get(f"/project/{project_key}/properties/forge.skills")
+
+        if response.status_code == 404:
+            return None
+
+        response.raise_for_status()
+        value = response.json().get("value")
+
+        # value may already be a parsed list (Jira sometimes auto-parses JSON
+        # property values) or a raw JSON string.
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"forge.skills for project {project_key} contains invalid JSON; "
+                    "returning empty list."
+                )
+                return []
+
+        if not isinstance(value, list):
+            logger.warning(
+                f"forge.skills for project {project_key} is not a list (got {type(value).__name__}); "
+                "returning empty list."
+            )
+            return []
+
+        entries: list[SkillEntry] = []
+        for i, item in enumerate(value):
+            try:
+                entries.append(SkillEntry.model_validate(item))
+            except (ValidationError, TypeError) as exc:
+                logger.warning(
+                    f"forge.skills[{i}] for project {project_key} failed validation: {exc}; "
+                    "returning empty list."
+                )
+                return []
+
+        return entries
 
     @staticmethod
     def _text_to_adf(text: str) -> dict[str, Any]:

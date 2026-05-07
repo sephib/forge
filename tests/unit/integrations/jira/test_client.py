@@ -1,8 +1,9 @@
 """Unit tests for Jira client."""
 
-import pytest
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-import httpx
+
+import pytest
 
 from forge.integrations.jira.client import JiraClient, MissingProjectConfig
 from forge.models.workflow import ForgeLabel
@@ -237,6 +238,7 @@ class TestGetProjectProperty:
     async def test_returns_value_on_success(self, jira_client):
         """Returns the property value when the API responds with 200."""
         import forge.integrations.jira.client as client_module
+
         client_module._project_property_cache.clear()
 
         mock_response = MagicMock()
@@ -257,6 +259,7 @@ class TestGetProjectProperty:
     async def test_returns_cached_value_on_second_call(self, jira_client):
         """Returns cached value without hitting the API on second call."""
         import forge.integrations.jira.client as client_module
+
         client_module._project_property_cache.clear()
         client_module._project_property_cache[("MYPROJ", "forge.repos")] = ["cached/repo"]
 
@@ -273,6 +276,7 @@ class TestGetProjectProperty:
     async def test_returns_none_on_404(self, jira_client):
         """Returns None when the property is not set (404)."""
         import forge.integrations.jira.client as client_module
+
         client_module._project_property_cache.clear()
 
         mock_response = MagicMock()
@@ -360,3 +364,212 @@ class TestGetProjectDefaultRepo:
 
         with pytest.raises(MissingProjectConfig, match="malformed"):
             await jira_client.get_project_default_repo("MYPROJ")
+
+
+class TestGetSkillsConfig:
+    """Tests for get_skills_config method."""
+
+    def _make_response(self, status_code: int, json_data: Any = None) -> MagicMock:
+        """Helper to build a mock HTTP response."""
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        if json_data is not None:
+            mock_response.json.return_value = json_data
+        mock_response.raise_for_status = MagicMock()
+        return mock_response
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_property_not_set(self, jira_client):
+        """Returns None when forge.skills is not set (404)."""
+        mock_response = self._make_response(404)
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_skill_entries_for_valid_list(self, jira_client):
+        """Returns list of SkillEntry when forge.skills contains a valid list."""
+        from forge.skills.models import SkillEntry
+
+        mock_response = self._make_response(
+            200,
+            {
+                "value": [
+                    {"source": "https://github.com/acme/skills", "ref": "main", "path": "skill_0"},
+                ]
+            },
+        )
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result is not None
+        assert len(result) == 1
+        assert isinstance(result[0], SkillEntry)
+        assert result[0].source == "https://github.com/acme/skills"
+        assert result[0].ref == "main"
+        assert result[0].path == "skill_0"
+
+    @pytest.mark.asyncio
+    async def test_returns_skill_entries_with_skill_mapping(self, jira_client):
+        """Returns SkillEntry with skill_mapping mode."""
+        from forge.skills.models import SkillEntry
+
+        mock_response = self._make_response(
+            200,
+            {
+                "value": [
+                    {
+                        "source": "https://github.com/acme/skills",
+                        "ref": "v1.0.0",
+                        "skill_mapping": {"my-skill": "skills/my_skill"},
+                    },
+                ]
+            },
+        )
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result is not None
+        assert len(result) == 1
+        assert isinstance(result[0], SkillEntry)
+        assert result[0].skill_mapping == {"my-skill": "skills/my_skill"}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_for_invalid_json_string(self, jira_client):
+        """Returns empty list and logs warning when value is a malformed JSON string."""
+        mock_response = self._make_response(200, {"value": "not-valid-json!!!"})
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_for_non_list_value(self, jira_client):
+        """Returns empty list when forge.skills value is not a list."""
+        mock_response = self._make_response(
+            200, {"value": {"source": "https://github.com/x/y", "path": "a"}}
+        )
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_for_invalid_skill_entry(self, jira_client):
+        """Returns empty list when an entry fails SkillEntry validation."""
+        mock_response = self._make_response(
+            200,
+            {
+                "value": [
+                    # Missing required 'source' field, and has both path and skill_mapping
+                    {"path": "skills/", "skill_mapping": {"x": "y"}},
+                ]
+            },
+        )
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_does_not_use_project_property_cache(self, jira_client):
+        """get_skills_config bypasses _project_property_cache for fresh reads."""
+        import forge.integrations.jira.client as client_module
+
+        # Pre-populate the cache with a stale value for this key
+        client_module._project_property_cache[("MYPROJ", "forge.skills")] = [
+            {"source": "https://github.com/stale/skills", "path": "old"}
+        ]
+
+        mock_response = self._make_response(
+            200,
+            {
+                "value": [
+                    {"source": "https://github.com/fresh/skills", "ref": "main", "path": "skill_0"},
+                ]
+            },
+        )
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        # Should return fresh API data, not the stale cache
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].source == "https://github.com/fresh/skills"
+        # HTTP call must have been made (not served from cache)
+        mock_http.get.assert_called_once_with("/project/MYPROJ/properties/forge.skills")
+
+        # Restore cache state
+        client_module._project_property_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_for_empty_list(self, jira_client):
+        """Returns empty list when forge.skills is set to an empty array."""
+        mock_response = self._make_response(200, {"value": []})
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_parses_json_string_value(self, jira_client):
+        """Handles when Jira returns the value as a raw JSON string."""
+        import json
+
+        from forge.skills.models import SkillEntry
+
+        raw = json.dumps([{"source": "https://github.com/acme/skills", "path": "skills/"}])
+        mock_response = self._make_response(200, {"value": raw})
+
+        with patch.object(jira_client, "_get_client") as mock_get_client:
+            mock_http = AsyncMock()
+            mock_http.get = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_http
+
+            result = await jira_client.get_skills_config("MYPROJ")
+
+        assert result is not None
+        assert len(result) == 1
+        assert isinstance(result[0], SkillEntry)
+        assert result[0].source == "https://github.com/acme/skills"
