@@ -40,7 +40,7 @@ triage_check → [triage_gate if needed] → analyze_bug → reflect_rca
              → decompose_plan → [existing task execution loop]
 ```
 
-Everything from `setup_workspace` onward is unchanged.
+Everything from `setup_workspace` onward is unchanged, with the exception of `local_review`, which is enhanced for the bug workflow — see [Implementation Phase Enhancement](#implementation-phase-enhancement) below.
 
 ### Detailed Design
 
@@ -50,12 +50,12 @@ Everything from `setup_workspace` onward is unchanged.
 route_entry
     ↓
 triage_check ─── sufficient ──→ analyze_bug ←──────────────────────┐
-    │                                ↓                              │ (feedback)
-    └── missing ──→ triage_gate      reflect_rca ──── gaps ──→ analyze_bug
-                    (pause)     ↓         ↑                (max 3 iterations)
-                          ──────┘    passes
-                                     ↓
-                              rca_option_gate (pause)
+  ↑     │                            ↓                              │ (feedback)
+  │     └── missing ──→ triage_gate  reflect_rca ──── gaps ──→ analyze_bug
+  │                      (pause)          ↑               (max 3 iterations)
+  └──────────── resume ──────────┘    passes
+                                          ↓
+                                   rca_option_gate (pause)
                                      │
                         ┌────────────┴────────────┐
                     >option N                 feedback
@@ -73,12 +73,12 @@ triage_check ─── sufficient ──→ analyze_bug ←───────
                ↓
         setup_workspace → implement_bug_fix → local_review
             → create_pr → teardown_workspace
-            → ci_evaluator → human_review_gate → END
+            → ci_evaluator → human_review_gate → post_merge_summary → END
 ```
 
 #### Stage 1: Triage
 
-**`triage_check`** (no container) evaluates the Jira ticket against six required fields:
+**`triage_check`** (no container) posts an immediate Jira comment acknowledging receipt and stating that analysis is underway, then evaluates the ticket against six required fields:
 
 1. Steps to reproduce
 2. Expected vs actual behavior
@@ -86,6 +86,8 @@ triage_check ─── sufficient ──→ analyze_bug ←───────
 4. Affected versions
 5. Error output (stack trace, log snippet, or error message)
 6. Affected component / repo
+
+The checklist is fixed and not configurable per project. Fields that are genuinely not applicable (e.g., no stack trace for an infra bug with no error output) count as satisfied if the ticket makes clear why they don't apply.
 
 If all six are present or clearly inferable, routes directly to `analyze_bug` — no pause.
 
@@ -101,8 +103,9 @@ The agent explores the codebase — clones repos, checks out branches, reads fil
 - Trace from trigger to symptom
 - **1–4 distinct fix options**, each with title, description, and trade-offs
 - Embedded code snippets sufficient for the critic to validate without independent exploration
+- **Reproducibility assessment**: whether the bug can be demonstrated by a unit or integration test in isolation, and if not, why (e.g., requires a running cluster, environment-specific state, specific infra). If a unit-level test is feasible, the agent includes the full source of a minimal failing test in the RCA output — the test is not committed, but the implementing agent uses it as a specification. If not, it documents the conditions under which the bug manifests so a human can verify independently.
 
-**`reflect_rca`** runs in a standard container (same infra). Receives the RCA text. Validates:
+**`reflect_rca`** runs in a standard container (same infra) because validating that named files and functions exist at the stated locations requires repo access. Receives the RCA text. Validates:
 - Named files and functions exist at the stated locations
 - Failure mechanism is actually possible given the code
 - Fix options are genuinely distinct
@@ -168,7 +171,10 @@ Comment routing on resume:
 | `forge:plan-approved` label applied | Route to `decompose_plan` |
 | Plain comment | Feedback → `regenerate_plan` → re-runs `plan_bug_fix` → return to gate |
 
-**`decompose_plan`** (no container) creates one Jira **Task** per repo, linked to the bug ticket via "implements" issue link. Each task gets a `repo:<repo-name>` label (same pattern as epic decomposition in the feature workflow) and scoped implementation instructions. Every approved plan produces at least one linked task — if no repo is explicitly identified, the task is created against the primary repo from the ticket context.
+Event dispatch (label vs. comment) follows the same routing pattern as the existing `rca_option_gate` — the worker inspects the incoming webhook event type and branches accordingly.
+
+**`decompose_plan`** (no container) creates one Jira **Task** per repo, linked to the bug ticket via "implements" issue link. Each task gets a `repo:<repo-name>` label (same pattern as epic decomposition in the feature workflow) and scoped implementation instructions. Every approved plan produces at least one linked task — if no repo is explicitly identified, the task is created against the primary repo from the ticket context. There is no hard cap on the number of tasks; the planning prompt instructs the agent to keep the decomposition proportionate to the scope of the fix, mirroring the feature workflow's approach.
+
 
 #### New state fields
 
@@ -181,6 +187,7 @@ triage_missing_fields: list[str]
 reflection_count: int
 reflection_critique: str | None
 rca_options: list[dict]          # [{title, description, tradeoffs}, ...]
+reproducibility_assessment: str | None  # human-readable; includes failing test source if feasible (not committed)
 
 # Option selection
 selected_fix_option: int | None
@@ -189,6 +196,12 @@ selected_fix_approach: dict | None
 # Planning
 plan_content: str | None
 linked_task_keys: list[str]      # Jira task keys created by decompose_plan
+
+# Qualitative review (implementation phase)
+local_review_verdict: str | None         # "adequate" | "tests_incomplete" | "symptom_only"
+qualitative_feedback: str | None         # structured feedback from reviewer passed to next attempt
+qualitative_retry_count: int             # number of re-implementation attempts made
+qualitative_review_failed: bool          # True if cap was reached without adequate verdict
 ```
 
 #### New `ForgeLabel` entries
@@ -210,6 +223,82 @@ PLAN_APPROVED  = "forge:plan-approved"
 | `plan-bug-fix.md` | New | Generate implementation plan from RCA + selected option |
 | `regenerate-plan.md` | New | Revise plan incorporating user feedback |
 | `fix-bug.md` | **Retired** | Replaced by `implement-task` prompt used with plan as context |
+| `local-review-bug.md` | New | Bug-specific qualitative review using RCA + plan + diff; outputs `adequate`, `tests_incomplete`, or `symptom_only` verdict with specific guidance |
+| `post-merge-summary.md` | New | Generate release note and fix summary from RCA + plan + implementation notes for Jira comment |
+
+### Implementation Phase Enhancement
+
+#### Enhanced `local_review` (bug workflow only)
+
+The existing `local_review` node runs a container that inspects the diff and fixes mechanical breaking issues (linting, compilation errors, test failures). For the bug workflow it is enhanced with a bug-specific prompt (`local-review-bug.md`) that additionally receives the RCA, `selected_fix_approach`, and `plan_content` as context.
+
+The container performs two checks in sequence:
+
+1. **Mechanical check** (existing): run linters, type checkers, and the test suite; report any remaining issues.
+2. **Qualitative check** (new): re-read the RCA and plan, then inspect the actual diff and ask:
+   - Does the change address the confirmed root cause, or only a symptom?
+   - Do the new or modified tests actually prove the bug is fixed (i.e., would they have caught this bug before the fix)?
+   - Does the diff match the scope of the approved plan, or has it drifted significantly?
+
+The reviewer is **read-only** — it never modifies files itself. All remediation is routed back to `implement_bug_fix` as structured feedback, so every change goes through the same review loop.
+
+The qualitative check produces one of three verdicts stored in `local_review_verdict`:
+
+| Verdict | Meaning | Action |
+|---------|---------|--------|
+| `adequate` | Fix addresses root cause; tests are sufficient | Proceed to `create_pr` |
+| `tests_incomplete` | Fix looks correct but test coverage is weak | Increment `qualitative_retry_count`, route back to `implement_bug_fix` with specific guidance on what tests are missing |
+| `symptom_only` | Fix addresses a symptom; root cause unresolved | Increment `qualitative_retry_count`, route back to `implement_bug_fix` with structured feedback on what was wrong and what the root cause still requires |
+
+In both non-adequate cases the workspace is **not reverted**. The implementing agent receives the current code state alongside the reviewer's feedback and decides what to keep, discard, or change. A blanket revert would discard potentially useful work — test scaffolding, refactoring, partial progress — even when only the fix direction was wrong.
+
+#### Re-implementation protocol
+
+When `implement_bug_fix` is entered with a non-zero `qualitative_retry_count`, the prompt (`implement-task.md`) is augmented with a structured review-addressing block:
+
+```
+## Review Feedback (attempt {{ qualitative_retry_count }} of 2)
+
+Verdict: {{ local_review_verdict }}
+
+{{ qualitative_feedback }}
+
+## Instructions for this attempt
+
+You are not starting from scratch. The workspace already contains changes from the previous attempt.
+Your job is to address the reviewer's feedback while preserving work that is still correct.
+
+Before making changes:
+1. Read `git diff main` to understand what the previous attempt changed.
+2. Read the reviewer's feedback carefully — it identifies specific gaps, not a general failure.
+3. Decide what to keep (correct changes, useful test infrastructure, refactoring),
+   what to revert (the parts the reviewer identified as wrong), and what to add or replace.
+
+Do not re-implement everything from scratch unless the reviewer explicitly indicated
+the entire approach is wrong. Make targeted changes and explain your decisions in the commit message.
+```
+
+This ensures the implementing agent has full context — RCA, plan, current code state, and reviewer rationale — and is guided to make surgical changes rather than re-doing all the work. The loop is capped at **2 retries**. After the second failed attempt, the workflow does **not** escalate — it proceeds to `create_pr` with `qualitative_review_failed: true`. The PR description includes a clearly marked warning block summarising the unresolved verdict, the reviewer's final feedback, and the number of attempts made, so the human reviewer has full context and can decide whether to request changes or close the PR. The Jira ticket also receives a comment with the same information.
+
+#### Release notes and post-merge summary
+
+**PR description** — `create_pr` includes a release note section generated from the RCA, `selected_fix_approach`, and `plan_content`. The section is formatted to be directly usable in release documents:
+
+```
+## Release Note
+
+**Component:** <component / repo>
+**Fix:** <one-sentence description of what was fixed>
+**Root cause:** <one-sentence summary of the root cause>
+**Impact:** <who is affected and under what conditions>
+```
+
+**Post-merge Jira comment** — `post_merge_summary` is a new no-container node that fires after the PR is merged (the existing merge path through `human_review_gate`). It posts a comment to the bug ticket containing:
+
+- A fix summary (what was changed and why, derived from the RCA and plan)
+- The same release note block from the PR description, formatted as standalone text ready to paste into a release document
+
+`post_merge_summary` runs after `human_review_gate` routes to END on the merge path. It is non-blocking: a failure to post the comment is logged and the workflow ends normally — it does not re-open the ticket or escalate.
 
 ### User Experience
 
@@ -219,6 +308,9 @@ PLAN_APPROVED  = "forge:plan-approved"
 [Bug filed with all six fields present]
 
 [Forge, immediately]
+Analyzing this bug — RCA and fix options will be posted here once complete.
+
+[Forge, after analysis]
 forge:rca-pending set on PROJ-123
 
 ## Root Cause Analysis
@@ -253,6 +345,9 @@ forge:plan-pending set on PROJ-123
 
 ```
 [Bug filed: "login is broken"]
+
+[Forge, immediately]
+Analyzing this bug — will post questions or RCA shortly.
 
 [Forge]
 forge:triage-pending set on PROJ-123
@@ -290,9 +385,11 @@ The existing `answer_question` node is extended to cover all three new pause gat
 
 ## Scope: What Is Not Changing
 
-- `setup_workspace`, `implement_bug_fix`, `local_review`, `create_pr`, `teardown_workspace` — unchanged
+- `setup_workspace`, `implement_bug_fix`, `teardown_workspace` — unchanged
+- `local_review` — enhanced for the bug workflow (see Implementation Phase Enhancement above)
+- `create_pr` — enhanced to include a release note section in the PR description
 - CI evaluation loop (`ci_evaluator`, `attempt_ci_fix`, `wait_for_ci_gate`) — unchanged
-- Human review loop (`human_review_gate`, `implement_review`, `review_response_gate`) — unchanged
+- Human review loop (`human_review_gate`, `implement_review`, `review_response_gate`) — unchanged; `implement_review` enhanced with bug context and decision log visibility; merge path extended with `post_merge_summary` before END
 - `escalate_blocked` — unchanged, used by all new nodes on failure
 - `route_entry` resume logic — extended to cover new nodes; all existing resume paths preserved
 
@@ -302,6 +399,7 @@ The existing `answer_question` node is extended to cover all three new pause gat
 
 | Alternative | Pros | Cons | Why Not |
 |-------------|------|------|---------|
+| Dedicated reproduction stage before analysis | Grounds RCA in observed behavior; catches already-fixed or non-reproducible bugs early | Full system reproduction is impossible for large distributed projects (e.g., OCP/OSP) that require a running cluster, specific infra, or environment state a container cannot provide | Replaced by a reproducibility assessment field in the RCA output: the agent writes a failing unit test when feasible, and documents reproduction conditions when not |
 | Always pause at triage gate | Simple, uniform flow | Adds friction to well-specified bugs | Conditional gate keeps happy path fast |
 | Reflection inside container (opaque loop) | Simpler graph | Not observable or resumable independently | Graph node is more debuggable and testable |
 | Single combined triage + analysis container | Fewer container invocations | Can't resume from triage without re-running analysis; mixed responsibilities | Separate nodes have cleaner contracts |
@@ -320,7 +418,9 @@ The existing `answer_question` node is extended to cover all three new pause gat
 4. **Phase 4: Option selection gate** — `>option N` comment parsing, `selected_fix_approach` state, updated `rca_option_gate` routing (~0.5 days)
 5. **Phase 5: Planning** — `plan_bug_fix` node, `plan_approval_gate`, `regenerate_plan`, `plan-bug-fix.md` and `regenerate-plan.md` prompts, `PLAN_PENDING`/`PLAN_APPROVED` labels (~1.5 days)
 6. **Phase 6: Decomposition** — `decompose_plan` node, Jira task creation with "implements" link, `repo:<name>` tagging, `linked_task_keys` state (~1 day)
-7. **Phase 7: Tests and cleanup** — Update `tests/flows/bug_workflow/`, retire `fix-bug.md`, extend `route_entry` for all new nodes, update Q&A routing to cover new gates (~1 day)
+7. **Phase 7: Enhanced local review** — `local-review-bug.md` prompt, `qualitative_feedback` state, re-implementation loop with cap, `qualitative_review_failed` PR warning block (~1 day)
+8. **Phase 8: Release notes and post-merge summary** — release note block in `create_pr`, `post_merge_summary` node, `post-merge-summary.md` prompt, merge-path routing from `human_review_gate` (~0.5 days)
+9. **Phase 9: Tests and cleanup** — Update `tests/flows/bug_workflow/`, retire `fix-bug.md`, extend `route_entry` for all new nodes, update Q&A routing to cover new gates (~1 day)
 
 ### Dependencies
 
@@ -338,15 +438,6 @@ The existing `answer_question` node is extended to cover all three new pause gat
 | `triage_check` is too strict and blocks well-specified tickets | Low | Med | Prompt must use "clearly inferable" not "explicitly stated"; test against real ticket corpus |
 | `decompose_plan` creates tasks with incorrect repo tags | Med | Med | Validate `repo:<name>` tags against known repos from project metadata before creating |
 | Retiring `fix-bug.md` breaks any existing in-flight bug workflows | Low | High | `route_entry` resume routing preserves paths for existing checkpoints; retiring prompt only affects new invocations |
-
----
-
-## Open Questions
-
-- [ ] Should the triage checklist be configurable per Jira project (some projects always include stack traces; others are for infra bugs with no traces)?
-- [ ] What is the maximum number of linked tasks `decompose_plan` should create? Is there a cap or does it follow the plan?
-- [ ] Should Q&A mode be extended to `triage_gate` and `plan_approval_gate`, or is it only needed at the RCA option gate?
-- [ ] After `reflect_rca` exhausts its 3 iterations without `VALID`, should the workflow pause for human review of the unvalidated RCA, or proceed with the warning note automatically?
 
 ---
 
